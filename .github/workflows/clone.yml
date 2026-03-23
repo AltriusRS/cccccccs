@@ -67,5 +67,7 @@ jobs:
       - name: Smoke test image
         run: |
           docker run --rm \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
             ghcr.io/${{ steps.owner.outputs.value }}/ubuntu-latest-like:${{ github.sha }} \
             bash -lc './scripts/smoke-test.sh'
