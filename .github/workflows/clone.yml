@@ -26,10 +26,10 @@ jobs:
       - name: Check for changes
         id: changes
         run: |
-          if git diff --quiet generated upstream-state.json; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
+          if [[ -n "$(git status --porcelain generated upstream-state.json)" ]]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Commit updated manifests
