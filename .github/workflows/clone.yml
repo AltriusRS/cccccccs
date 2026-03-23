@@ -2,15 +2,15 @@ name: Build runner-like images
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 4 * * *"
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/build-images.yml"
-      - "docker/**"
-      - "scripts/**"
+#  schedule:
+#    - cron: "0 4 * * *"
+#  push:
+#    branches:
+#      - main
+#    paths:
+#      - ".github/workflows/build-images.yml"
+#      - "docker/**"
+#      - "scripts/**"
 
 jobs:
   build-linux:
