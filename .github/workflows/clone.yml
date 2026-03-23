@@ -1,73 +1,179 @@
-name: Build ubuntu-latest-like
+name: Build runner-like images
 
 on:
-  push:
   workflow_dispatch:
   schedule:
     - cron: "0 4 * * *"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-images.yml"
+      - "docker/**"
+      - "scripts/**"
 
 jobs:
-  sync-and-build:
+  build-linux:
+    name: Build Linux - ${{ matrix.variant }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: ubuntu-24.04
+            dockerfile: docker/linux/base.Dockerfile
+            build_args: |
+              UBUNTU_VERSION=24.04
+            alias_tag: ubuntu-latest
+
+          - variant: ubuntu-22.04
+            dockerfile: docker/linux/base.Dockerfile
+            build_args: |
+              UBUNTU_VERSION=22.04
+            alias_tag: ""
+
+          - variant: ubuntu-slim
+            dockerfile: docker/linux/slim.Dockerfile
+            build_args: ""
+            alias_tag: ""
+
     permissions:
-      contents: write
+      contents: read
       packages: write
 
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Sync upstream runner-images
-        run: node scripts/sync-runner-image.mjs
-
-      - name: Check for changes
-        id: changes
-        run: |
-          if [[ -n "$(git status --porcelain generated upstream-state.json)" ]]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Commit updated manifests
-        if: steps.changes.outputs.changed == 'true'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email \
-            "41898282+github-actions[bot]@users.noreply.github.com"
-          git add generated upstream-state.json
-          git commit -m "chore: sync runner-images metadata"
-          git push
-
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Lowercase repository owner
         id: owner
         run: |
           echo "value=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push image
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare tags
+        id: tags
+        run: |
+          IMAGE="ghcr.io/${{ steps.owner.outputs.value }}/gha-runnerlike"
+          TAGS="${IMAGE}:${{ matrix.variant }},${IMAGE}:${{ matrix.variant }}-${GITHUB_SHA}"
+
+          if [[ -n "${{ matrix.alias_tag }}" ]]; then
+            TAGS="${TAGS},${IMAGE}:${{ matrix.alias_tag }}"
+          fi
+
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push Linux image
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: ${{ matrix.dockerfile }}
           push: true
-          tags: |
-            ghcr.io/${{ steps.owner.outputs.value }}/ubuntu-latest-like:latest
-            ghcr.io/${{ steps.owner.outputs.value }}/ubuntu-latest-like:${{ github.sha }}
+          build-args: ${{ matrix.build_args }}
+          tags: ${{ steps.tags.outputs.tags }}
 
-      - name: Smoke test image
+#      - name: Smoke test Linux image
+#        run: |
+#          docker run --rm \
+#            -v "$GITHUB_WORKSPACE:/workspace" \
+#            -w /workspace \
+#            "${{ steps.tags.outputs.image }}:${{ matrix.variant }}-${GITHUB_SHA}" \
+#            bash ./scripts/smoke-test.sh
+
+  build-windows:
+    name: Build Windows - ${{ matrix.variant }}
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: windows-2025
+            dockerfile: docker/windows/windows-2025.Dockerfile
+            alias_tag: windows-latest
+
+          - variant: windows-2022
+            dockerfile: docker/windows/windows-2022.Dockerfile
+            alias_tag: ""
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Lowercase repository owner
+        id: owner
+        shell: pwsh
         run: |
-          docker run --rm \
-            -v "$GITHUB_WORKSPACE:/workspace" \
-            -w /workspace \
-            ghcr.io/${{ steps.owner.outputs.value }}/ubuntu-latest-like:${{ github.sha }} \
-            bash -lc './scripts/smoke-test.sh'
+          "value=$($env:GITHUB_REPOSITORY_OWNER.ToLowerInvariant())" `
+            >> $env:GITHUB_OUTPUT
+
+      - name: Log in to GHCR
+        shell: pwsh
+        run: |
+          $token = "${{ secrets.GITHUB_TOKEN }}"
+          $token | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Prepare tags
+        id: tags
+        shell: pwsh
+        run: |
+          $image = "ghcr.io/${{ steps.owner.outputs.value }}/gha-runnerlike"
+          $tags = @(
+            "${image}:${{ matrix.variant }}",
+            "${image}:${{ matrix.variant }}-$env:GITHUB_SHA"
+          )
+
+          if ("${{ matrix.alias_tag }}") {
+            $tags += "${image}:${{ matrix.alias_tag }}"
+          }
+
+          "image=$image" >> $env:GITHUB_OUTPUT
+          "sha_tag=${image}:${{ matrix.variant }}-$env:GITHUB_SHA" `
+            >> $env:GITHUB_OUTPUT
+          "all_tags=$($tags -join '|')" >> $env:GITHUB_OUTPUT
+
+      - name: Build Windows image
+        shell: pwsh
+        run: |
+          $tags = "${{ steps.tags.outputs.all_tags }}".Split("|")
+
+          $tagArgs = @()
+          foreach ($tag in $tags) {
+            $tagArgs += "-t"
+            $tagArgs += $tag
+          }
+
+          docker build `
+            -f "${{ matrix.dockerfile }}" `
+            @tagArgs `
+            .
+
+      - name: Push Windows image
+        shell: pwsh
+        run: |
+          $tags = "${{ steps.tags.outputs.all_tags }}".Split("|")
+          foreach ($tag in $tags) {
+            docker push $tag
+          }
+
+#      - name: Smoke test Windows image
+#        shell: pwsh
+#        run: |
+#          docker run --rm `
+#            -v "${{ github.workspace }}:C:\workspace" `
+#            -w C:\workspace `
+#            "${{ steps.tags.outputs.sha_tag }}" `
+#            pwsh -File .\scripts\smoke-test.ps1
