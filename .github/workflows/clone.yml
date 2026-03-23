@@ -1,0 +1,68 @@
+name: Build ubuntu-latest-like
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 4 * * *"
+
+jobs:
+  sync-and-build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Sync upstream runner-images
+        run: node scripts/sync-runner-image.ts
+
+      - name: Check for changes
+        id: changes
+        run: |
+          if git diff --quiet generated upstream-state.json; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit updated manifests
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+          git add generated upstream-state.json
+          git commit -m "chore: sync runner-images metadata"
+          git push
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/ubuntu-latest-like:latest
+            ghcr.io/${{ github.repository_owner }}/ubuntu-latest-like:${{ github.sha }}
+
+      - name: Smoke test image
+        run: |
+          docker run --rm \
+            ghcr.io/${{ github.repository_owner }}/ubuntu-latest-like:${{ github.sha }} \
+            bash -lc './scripts/smoke-test.sh'
