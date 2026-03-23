@@ -21,7 +21,7 @@ jobs:
           node-version: 20
 
       - name: Sync upstream runner-images
-        run: node scripts/sync-runner-image.ts
+        run: node scripts/sync-runner-image.mjs
 
       - name: Check for changes
         id: changes
