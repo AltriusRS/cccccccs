@@ -19,9 +19,6 @@ jobs:
         with:
           node-version: 20
 
-      - name: Install deps
-        run: npm ci
-
       - name: Sync upstream runner-images
         run: node scripts/sync-runner-image.ts
 
